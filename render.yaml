@@ -1,0 +1,33 @@
+# One-click deploy of the full version (server + SQLite) on Render: Dashboard → New → Blueprint → pick this repo.
+# The disk keeps accounts across restarts (Render disks need a paid instance; without one, data resets on each deploy).
+services:
+  - type: web
+    name: fine-print
+    runtime: node
+    plan: starter
+    buildCommand: "true"
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: DB_PATH
+        value: /data/fineprint.db
+      - key: TRUST_PROXY
+        value: "1"
+      - key: PUBLIC_URL
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: CONTACT_EMAIL
+        sync: false
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1

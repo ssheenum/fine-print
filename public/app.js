@@ -8,8 +8,14 @@ const DAY = 86400000, RATE_AFTER = 21 * DAY;
 const S = { config: {}, user: null, profile: null, shelf: [], tab: 'face', authMode: null, setup: null, q: '', results: [], searching: false,
   current: null, snapMode: 'front', snapFor: null, reading: null, editing: null, showList: false, learned: null, deleteArmed: false };
 
+// Talks to the server when there is one; otherwise (e.g. on GitHub Pages) to the back end in local-api.js, which runs in this browser.
+let local = null;
 async function api(path, { method = 'GET', body } = {}) {
-  const r = await fetch(path, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined, credentials: 'same-origin' });
+  if (local) {
+    try { return await local.localApi(path, { method, body }); }
+    catch (e) { console.error(e); throw Object.assign(new Error(e.status ? e.message : 'Something went wrong.'), { status: e.status || 500 }); }
+  }
+  const r = await fetch(path.replace(/^\//, ''), { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined, credentials: 'same-origin' });
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw Object.assign(new Error(d.error || 'Something went wrong.'), { status: r.status });
   return d;
@@ -121,18 +127,19 @@ function authView(kind) {
     <h1 class="h-xl" style="margin-top:34px">${isUp ? 'Create your account' : 'Welcome back'}</h1>
     <p class="sub">${isUp ? 'So your shelf and ratings are saved wherever you sign in.' : 'Log in to pick up your shelf where you left it.'}</p>
     <div style="margin-top:28px;display:flex;flex-direction:column;gap:10px">
-      <button class="btn line" type="button" data-google>${ICON.google}Continue with Google</button>
-      <button class="btn line" type="button" data-apple>${ICON.apple}Continue with Apple</button>
+      ${S.config.local ? '' : `<button class="btn line" type="button" data-google>${ICON.google}Continue with Google</button>
+      <button class="btn line" type="button" data-apple>${ICON.apple}Continue with Apple</button>`}
       <button class="btn line ${m === 'email' ? 'on' : ''}" type="button" data-mode="email">${ICON.mail}Continue with email</button>
       <button class="btn line ${m === 'phone' ? 'on' : ''}" type="button" data-mode="phone">${ICON.phone}Continue with phone number</button>
     </div>
     ${form}
+    ${S.config.local ? `<p class="small" style="margin-top:18px">Your account and shelf are saved in this browser. To move them to another device, use Backup on the Profile page.</p>` : ''}
     <span style="margin:auto 0 28px;padding-top:24px;align-self:center;font-size:15px;color:var(--mute);min-height:44px;display:flex;align-items:center;gap:6px">
       ${isUp ? 'Have an account? <a href="#login" style="font-weight:600">Log in</a>' : 'New here? <a href="#signup" style="font-weight:600">Set me up</a>'}</span>
   </main>`;
   $$('[data-mode]').forEach((b) => b.onclick = () => { S.authMode = b.dataset.mode; authView(kind); $('#authform input')?.focus(); });
-  $('[data-google]').onclick = () => { if (S.config.google) location.href = '/api/auth/google?mode=' + kind; else toast("Google sign-in isn't switched on for this site yet. Use email or phone for now."); };
-  $('[data-apple]').onclick = () => toast("Apple sign-in is coming soon. Use email or phone for now.");
+  $('[data-google]')?.addEventListener('click', () => { if (S.config.google) location.href = 'api/auth/google?mode=' + kind; else toast("Google sign-in isn't switched on for this site yet. Use email or phone for now."); });
+  const apple = $('[data-apple]'); if (apple) apple.onclick = () => toast("Apple sign-in is coming soon. Use email or phone for now.");
   const f = $('#authform');
   if (f) f.onsubmit = async (e) => {
     e.preventDefault();
@@ -183,7 +190,7 @@ function setup() {
 /* ---------- shelf ---------- */
 async function loadShelf() { try { S.shelf = (await api('/api/shelf')).products; } catch { S.shelf = []; } }
 const due = (p) => !p.rating && Date.now() - p.addedAt >= RATE_AFTER;
-const proxied = (u) => '/api/img?url=' + encodeURIComponent(u);
+const proxied = (u) => S.config.local ? u : 'api/img?url=' + encodeURIComponent(u); // Open Beauty Facts allows direct browser use
 const small = (u) => u.replace(/\.full\.jpg$/, '.400.jpg');
 function picture(p, cls = '') {
   if (p.image) return `<img src="${esc(p.image)}" alt="" class="${p.imageMode === 'photo' ? 'photo' : p.imageMode === 'blend' ? 'blend' : ''} ${cls}">`;
@@ -539,6 +546,7 @@ async function profile() {
       : !L.works.length && !L.not.length ? `<p class="sub" style="margin-top:8px">Rate a few products and I'll start spotting which ingredients work for you.</p>`
       : `${L.works.length ? `<p style="margin:12px 0 6px;font-size:15px;font-weight:600">Works for you</p>${learnRows(L.works)}` : ''}
          ${L.not.length ? `<p style="margin:16px 0 6px;font-size:15px;font-weight:600">Not for you</p>${learnRows(L.not, true)}` : ''}`}</div>
+    ${S.config.local ? localSettings() : ''}
     <span class="label" style="margin-top:30px;padding-bottom:6px">Account</span>
     <div class="rows"><div class="row"><div class="a">${esc(S.user.name || 'You')}</div><div class="b m">${esc(S.user.email || S.user.phone || (S.user.google ? 'Google account' : ''))}</div></div></div>
     <div style="display:flex;gap:18px;flex-wrap:wrap"><button class="link" data-logout>Log out</button><button class="link quiet" data-delete>Delete my account</button></div>
@@ -561,8 +569,54 @@ async function profile() {
     if (!S.deleteArmed) { S.deleteArmed = true; del.textContent = 'Tap again to delete everything'; del.style.color = 'var(--red)'; return; }
     await api('/api/account', { method: 'DELETE' }).catch(() => {}); Object.assign(S, { user: null, profile: null, shelf: [], current: null, learned: null, deleteArmed: false }); go('#welcome');
   };
+  wireLocalSettings();
   wireNav();
   if (!L) { try { S.learned = await api('/api/learned'); } catch { S.learned = { works: [], not: [] }; } if (route() === 'profile') profile(); }
+}
+// Only in the browser-only version: an optional AI key kept on this device, and backup files.
+function localSettings() {
+  const on = S.config.ai, name = { claude: 'Claude', gemini: 'Gemini' }[on];
+  return `<span class="label" style="margin-top:30px;padding-bottom:6px">AI reading (optional)</span>
+    <p class="sub" style="margin-top:0">${on ? `On, using your ${name} key. It reads any front-of-pack photo and writes richer notes.` : 'Add your own Claude or Gemini API key to read any front-of-pack photo. Without one, scoring uses the built-in engine.'}
+      The key stays in this browser and is sent only to ${on ? name : 'that AI provider'}.</p>
+    ${on ? `<div style="display:flex;gap:18px"><button class="link red" data-ai-off>Remove key</button></div>`
+    : `<form id="aiform" style="display:flex;flex-direction:column;gap:10px;margin-top:12px">
+        <div class="chips"><button type="button" class="chip" data-prov="claude" aria-pressed="${S.aiProv !== 'gemini'}">Claude</button><button type="button" class="chip" data-prov="gemini" aria-pressed="${S.aiProv === 'gemini'}">Gemini (free tier)</button></div>
+        <div class="field"><label for="aikey">API key</label><input class="input" id="aikey" type="password" autocomplete="off" placeholder="${S.aiProv === 'gemini' ? 'AIza…' : 'sk-ant-…'}"></div>
+        <button class="btn line auto" type="submit">Save key</button></form>`}
+    <span class="label" style="margin-top:30px;padding-bottom:6px">Backup</span>
+    <p class="sub" style="margin-top:0">Your shelf lives in this browser. Save a backup file to keep it safe or move it to another device.</p>
+    <div style="display:flex;gap:18px;flex-wrap:wrap;margin-top:6px"><button class="link" data-export>Save a backup</button><button class="link" data-import>Restore from a backup</button>
+      <input type="file" accept="application/json,.json" id="importfile" class="sr" tabindex="-1" aria-hidden="true"></div>`;
+}
+function wireLocalSettings() {
+  if (!S.config.local) return;
+  $$('[data-prov]').forEach((b) => b.onclick = () => { S.aiProv = b.dataset.prov; profile(); });
+  const f = $('#aiform');
+  if (f) f.onsubmit = (e) => {
+    e.preventDefault(); const key = $('#aikey').value.trim(); if (!key) return $('#aikey').focus();
+    local.setAI({ provider: S.aiProv || 'claude', key }); S.config.ai = local.aiProvider(); toast('Saved. AI reading is on.'); profile();
+  };
+  $('[data-ai-off]')?.addEventListener('click', () => { local.setAI(null); S.config.ai = null; toast('Key removed.'); profile(); });
+  $('[data-export]').onclick = async () => {
+    try {
+      const d = await api('/api/export'), a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([JSON.stringify(d)], { type: 'application/json' }));
+      a.download = `fine-print-backup-${new Date().toISOString().slice(0, 10)}.json`; document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    } catch (e) { toast(e.message); }
+  };
+  const file = $('#importfile');
+  $('[data-import]').onclick = () => file.click();
+  file.onchange = async () => {
+    const f = file.files?.[0]; if (!f) return;
+    try {
+      let data; try { data = JSON.parse(await f.text()); } catch { throw new Error('That file isn’t a Fine Print backup.'); }
+      const d = await api('/api/import', { method: 'POST', body: data });
+      await loadShelf(); S.learned = null; if (!S.profile) S.profile = (await api('/api/me')).profile;
+      toast(d.added ? `Restored ${d.added} product${d.added > 1 ? 's' : ''}.` : 'Nothing new in that backup.'); profile();
+    } catch (e) { toast(e.message); }
+  };
 }
 async function saveProfile() {
   try { const d = await api('/api/profile', { method: 'PUT', body: { profile: S.profile || {} } }); S.profile = d.profile; setTimeout(loadShelf, 300); toast('Saved. Your shelf is rescored.'); }
@@ -672,8 +726,21 @@ function queueShelfImages() {
 /* ---------- boot ---------- */
 (async function boot() {
   app.innerHTML = '<div class="spinner" style="margin-top:40vh" aria-label="Loading"></div>';
-  try { const [c, me] = await Promise.all([api('/api/config'), api('/api/me')]); S.config = c; S.user = me.user; S.profile = me.profile; } catch {}
+  // A server answers api/config with JSON. On a static host (GitHub Pages) it doesn't, so the back end runs in the browser.
+  // Add ?local to the address to force the browser-only version.
+  let server = null;
+  if (!new URLSearchParams(location.search).has('local')) {
+    try { const r = await fetch('api/config', { credentials: 'same-origin' }); if (r.ok && (r.headers.get('content-type') || '').includes('json')) server = await r.json(); } catch {}
+  }
+  try {
+    if (!server) local = await import('./local-api.js');
+    const [c, me] = await Promise.all([server || api('/api/config'), api('/api/me')]); S.config = c; S.user = me.user; S.profile = me.profile;
+  } catch (e) {
+    console.error(e);
+    app.innerHTML = `<main class="view pad24"><h1 class="h-xl" style="margin-top:30vh">Fine Print couldn't start.</h1><p class="sub">${local ? 'This browser blocked local storage. Try a normal (not private) window.' : 'The server didn’t answer. Try again in a moment.'}</p></main>`;
+    return;
+  }
   if (S.user) await loadShelf();
   render();
-  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('/sw.js').catch(() => {});
+  if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
